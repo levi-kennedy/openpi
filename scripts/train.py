@@ -3,6 +3,15 @@ import functools
 import logging
 import platform
 from typing import Any
+import os
+
+# Configure XLA/JAX runtime before importing jax.
+def _configure_xla_env() -> None:
+    # Use platform allocator to avoid large upfront preallocation/fragmentation.
+    os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+
+
+_configure_xla_env()
 
 import etils.epath as epath
 import flax.nnx as nnx

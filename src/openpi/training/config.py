@@ -89,6 +89,9 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # If true, will disable syncing the dataset from the Hugging Face Hub. Allows training on local-only datasets.
+    local_files_only: bool = False
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -602,6 +605,110 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+    # LoRA fine-tuning on the same local Droid dataset.
+    TrainConfig(
+        name="pi0_fast_droid_local_lora",
+        # Enable LoRA for the language backbone; action expert LoRA is internal to pi0-FAST.
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=SimpleDataConfig(
+            repo_id="/home/levi/.cache/huggingface/lerobot/droid03",
+            assets=AssetsConfig(
+                assets_dir="s3://openpi-assets/checkpoints/pi0_fast_droid/assets",
+                asset_id="droid",
+            ),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[libero_policy.LiberoInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                repo_id="/home/levi/.cache/huggingface/lerobot/droid03",
+                local_files_only=True,
+                prompt_from_task=True,
+                action_sequence_keys=("action",),
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "observation/image": "image",
+                                "observation/wrist_image": "wrist_image",
+                                "observation/state": "state",
+                                "actions": "action",
+                                "prompt": "prompt",
+                            }
+                        )
+                    ]
+                ),
+            ),
+        ),
+        # Start from the DROID fine-tuned checkpoint instead of the base.
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_droid/params"),
+        # LoRA uses much less memory; batch size 4 is a safe default for 24GB.
+        batch_size=4,
+        num_train_steps=1000,
+        # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+    ),
+    #
+    # Fine-tuning Droid (local LeRobot dataset).
+    #
+    # This config fine-tunes pi0-FAST on a local LeRobot dataset that contains
+    # images ("image", "wrist_image"), proprio state ("state" with 8 dims: 7 joints + 1 gripper),
+    # and per-frame actions under the key "action". Prompts are read from the dataset meta tasks.
+    # It repacks dataset keys to the model's expected keys and uses generic Libero-style inputs
+    # (works well for single third-person + wrist camera setups) while returning 8-dim Droid actions at inference.
+    TrainConfig(
+        name="pi0_fast_droid_local",
+        model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=10, max_token_len=180),
+        data=SimpleDataConfig(
+            repo_id="/home/levi/.cache/huggingface/lerobot/droid01",
+            # Reuse DROID norm stats from the DROID FAST checkpoint assets.
+            assets=AssetsConfig(
+                assets_dir="s3://openpi-assets/checkpoints/pi0_fast_droid/assets",
+                asset_id="droid",
+            ),
+            # Map dataset fields and define input/output transforms.
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[libero_policy.LiberoInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                outputs=[droid_policy.DroidOutputs()],
+            ),
+            base_config=DataConfig(
+                # Local LeRobot dataset directory containing `data/` and `meta/`.
+                repo_id="/home/levi/.cache/huggingface/lerobot/droid01",
+                local_files_only=True,
+                # Extract the prompt from the dataset meta tasks mapping.
+                prompt_from_task=True,
+                # The dataset stores per-frame action under the key "action".
+                action_sequence_keys=("action",),
+                # Repack raw dataset keys to the model’s expected keys and rename "action" -> "actions".
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "observation/image": "image",
+                                "observation/wrist_image": "wrist_image",
+                                "observation/state": "state",
+                                "actions": "action",
+                                # Keep the prompt that was injected from the dataset task mapping.
+                                "prompt": "prompt",
+                            }
+                        )
+                    ]
+                ),
+            ),
+        ),
+        # Initialize from the pi0-FAST DROID fine-tuned checkpoint to continue fine-tuning.
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_droid/params"),
+        num_train_steps=20_000,
     ),
     TrainConfig(
         name="pi0_fast_droid",
