@@ -617,17 +617,19 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
         ),
         data=SimpleDataConfig(
-            repo_id="/home/levi/.cache/huggingface/lerobot/droid03",
+            repo_id="/home/levi/.cache/huggingface/lerobot/droid_marker_in_bowl",
             assets=AssetsConfig(
-                assets_dir="s3://openpi-assets/checkpoints/pi0_fast_droid/assets",
-                asset_id="droid",
+                # path to find the norm stats file
+                assets_dir="/home/levi/.cache/huggingface/lerobot",
+                # particular asset associated with the norm stats
+                asset_id="droid_marker_in_bowl",
             ),
             data_transforms=lambda model: _transforms.Group(
-                inputs=[libero_policy.LiberoInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                inputs=[libero_policy.LiberoInputs(model_type=ModelType.PI0_FAST)],
                 outputs=[droid_policy.DroidOutputs()],
             ),
             base_config=DataConfig(
-                repo_id="/home/levi/.cache/huggingface/lerobot/droid03",
+                repo_id="/home/levi/.cache/huggingface/lerobot/droid_marker_in_bowl",
                 local_files_only=True,
                 prompt_from_task=True,
                 action_sequence_keys=("action",),
@@ -678,7 +680,7 @@ _CONFIGS = [
             ),
             # Map dataset fields and define input/output transforms.
             data_transforms=lambda model: _transforms.Group(
-                inputs=[libero_policy.LiberoInputs(action_dim=model.action_dim, model_type=ModelType.PI0_FAST)],
+                inputs=[libero_policy.LiberoInputs(model_type=ModelType.PI0_FAST)],
                 outputs=[droid_policy.DroidOutputs()],
             ),
             base_config=DataConfig(

@@ -1,6 +1,7 @@
 import os
 import datetime
 import bisect
+import math
 import numpy as np
 #import cv2
 import pandas as pd
@@ -75,19 +76,20 @@ def parse_image(msg, target_size=(224, 224)):
     return np.asarray(pil)
 
 
-def parse_droid_joint_state(msg, joint_reordering=(0, 1, 2, 3, 4, 5, 6, 7)):
-    msg = deserialize_message(msg, JointState)
-    return [
-        msg.position[joint_reordering[0]],
-        msg.position[joint_reordering[1]],
-        msg.position[joint_reordering[2]],
-        msg.position[joint_reordering[3]],
-        msg.position[joint_reordering[4]],
-        msg.position[joint_reordering[5]],
-        msg.position[joint_reordering[6]],
-        msg.position[joint_reordering[7]],
-    ]
+def _parse_joint_components(msg, joint_reordering):
+    joint_state = deserialize_message(msg, JointState)
 
+    positions = np.asarray([joint_state.position[idx] for idx in joint_reordering], dtype=np.float32)
+
+    velocities = np.zeros_like(positions)
+    if joint_state.velocity:
+        for i, idx in enumerate(joint_reordering):
+            if idx < len(joint_state.velocity):
+                value = joint_state.velocity[idx]
+                if value is not None and not math.isnan(value):
+                    velocities[i] = float(value)
+
+    return positions, velocities
 
 def iterate_bag(bag: SequentialReader):
     while bag.has_next():
@@ -132,12 +134,23 @@ def reorder_bag_timestamps(bag: SequentialReader, *, time_source: str = "record"
         yield topic, msg, t
 
 
-def process_frame(frame: dict) -> dict:
-    frame["state"] = np.array(parse_droid_joint_state(frame["state"]), dtype=np.float32)
+def process_frame(frame: dict, joint_reordering) -> dict:
+    if joint_reordering is None:
+        raise ValueError("Joint reordering must be computed before processing frames.")
+
+    state_positions, _ = _parse_joint_components(frame["state"], joint_reordering)
+    frame["state"] = state_positions
 
     actions = frame.pop("actions")
     final_joint_state, _ = actions[-1]
-    frame["action"] = np.array(parse_droid_joint_state(final_joint_state), dtype=np.float32)
+    action_positions, action_velocities = _parse_joint_components(final_joint_state, joint_reordering)
+
+    # Action is represented as 7 joint velocities followed by the gripper position.
+    action = np.zeros(8, dtype=np.float32)
+    num_velocity_dims = min(7, action_velocities.shape[0])
+    action[:num_velocity_dims] = action_velocities[:num_velocity_dims]
+    action[-1] = action_positions[-1]  # gripper position
+    frame["action"] = action
 
     return frame
 
@@ -195,24 +208,30 @@ def load_bag(bag_file_path: str, dataset: LeRobotDataset, task_description: str,
             topic == "/wrist_camera/image_raw"
             or topic == "/zed/zed_node/right/image_rect_color"
         ):
-            dataset.add_frame(process_frame(frame))
-            frame_count += 1
-            logger.info(
-                "Added frame #%d from bag %s at topic=%s timestamp=%s",
-                frame_count,
-                bag_file_path,
-                topic,
-                t,
-            )
+            if joint_reordering is None:
+                logger.warning(
+                    "Skipping frame for bag %s because joint reordering is not yet available.",
+                    bag_file_path,
+                )
+            else:
+                dataset.add_frame(process_frame(frame, joint_reordering))
+                frame_count += 1
+                logger.info(
+                    "Added frame #%d from bag %s at topic=%s timestamp=%s",
+                    frame_count,
+                    bag_file_path,
+                    topic,
+                    t,
+                )
 
-            # Start a new frame
-            frame = {
-                "image": None,
-                "wrist_image": None,
-                "state": None,
-                "task": task_description,
-                "actions": [],
-            }
+                # Start a new frame
+                frame = {
+                    "image": None,
+                    "wrist_image": None,
+                    "state": None,
+                    "task": task_description,
+                    "actions": [],
+                }
 
         if topic == "/wrist_camera/image_raw":
             wrist_msgs += 1
