@@ -320,7 +320,7 @@ class DroidPolicyNode(Node):
                     save_data[sanitized_key] = np.asarray([value])
             np.savez_compressed(self._debug_obs_path, **save_data)
             self.get_logger().info(f"Saved observation snapshot to {self._debug_obs_path}")
-        except Exception as exc:  # pylint: disable=broad-except
+        except Exception as exc:  
             self.get_logger().error(f"Failed to save observation snapshot: {exc}")
         finally:
             self._debug_obs_saved = True
