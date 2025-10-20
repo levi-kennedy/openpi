@@ -21,128 +21,31 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from cv_bridge import CvBridge
 
 # OpenPI imports
-from openpi.models import model as _model
 from openpi.policies import policy_config as _policy_config
-from openpi.shared import download
-from openpi.training.config import DataConfig, DataConfigFactory, ModelTransformFactory, AssetsConfig
-from openpi.training import weight_loaders
 from openpi import transforms as _transforms
-#from openpi.policies.libero_policy import _parse_image
-from openpi.training.config import TrainConfig
-import openpi.models.pi0_fast as pi0_fast
-import openpi.models.pi0_config as pi0_config
+from openpi.training import config as train_config
 
-ModelType: TypeAlias = _model.ModelType
+
+# Load the trained UR5e Pi0_fast local policy
+cfg = train_config.get_config("ur5e_2f85_sim_pi0_fast_lora_finetune_local")
+policy = _policy_config.create_trained_policy(
+    train_config=cfg,
+    checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_fast_lora_finetune_local/ur5e_2f85_sim-marker-bowl1/14999",
+    # This maps the ros2 topic/input names to the expected policy input names
+    repack_transforms=_transforms.Group(inputs=[
+        _transforms.RepackTransform({
+            "image": "base_rgb",
+            "wrist_image": "wrist_rgb",
+            "joints": "joints",
+            "gripper": "gripper",
+            "prompt": "prompt",
+        })
+    ]),
+)
+
 DEFAULT_RANDOM_SEED = 0
-
-def _parse_image(image) -> np.ndarray:
-    image = np.asarray(image)
-    if np.issubdtype(image.dtype, np.floating):
-        image = (255 * image).astype(np.uint8)
-    if image.shape[0] == 3:
-        image = einops.rearrange(image, "c h w -> h w c")
-    return image
-
-
-@dataclasses.dataclass(frozen=True)
-class UR5Inputs(_transforms.DataTransformFn):
-
-    action_dim: int
-    model_type: _model.ModelType = _model.ModelType.PI0
-
-    def __call__(self, data: dict) -> dict:
-        # First, concatenate the joints and gripper into the state vector and pad if needed.
-        state = np.concatenate([data["joints"], data["gripper"]])
-        state = _transforms.pad_to_dim(state, self.action_dim)
-
-        # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
-        # stores as float32 (C,H,W), gets skipped for policy inference.
-        base_image = _parse_image(data["base_rgb"])
-        wrist_image = _parse_image(data["wrist_rgb"])
-
-        match self.model_type:
-            case _model.ModelType.PI0_FAST:
-                names = ("base_0_rgb", "base_1_rgb", "wrist_0_rgb")
-                images = (base_image, np.zeros_like(base_image), wrist_image)
-                image_masks = (np.True_, np.True_, np.True_)
-            case _model.ModelType.PI0 | _model.ModelType.PI05:
-                names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-                images = (base_image, wrist_image, np.zeros_like(base_image))
-                image_masks = (np.True_, np.True_, np.False_)
-            case _:
-                raise ValueError(f"Unsupported model type for UR5 inputs: {self.model_type}")
-
-        # Create inputs dict.
-        inputs = {
-            "state": state,
-            "image": dict(zip(names, images, strict=True)),
-            "image_mask": dict(zip(names, image_masks, strict=True)),
-        }
-
-        if "actions" in data:
-            inputs["actions"] = data["actions"]
-
-        # Pass the prompt (aka language instruction) to the model.
-        if "prompt" in data:
-            inputs["prompt"] = data["prompt"]
-
-        return inputs
-
-
-@dataclasses.dataclass(frozen=True)
-class UR5Outputs(_transforms.DataTransformFn):
-
-    def __call__(self, data: dict) -> dict:
-        # Since the robot has 7 action dimensions (6 DoF + gripper), return the first 7 dims
-        return {"actions": np.asarray(data["actions"][:, :7])}
-
-
-@dataclasses.dataclass(frozen=True)
-class LeRobotUR5eDataConfig(DataConfigFactory):
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Boilerplate for remapping keys from the LeRobot dataset. We assume no renaming needed here.
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "base_rgb": "image",
-                        "wrist_rgb": "wrist_image",
-                        "joints": "joints",
-                        "gripper": "gripper",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
-
-        # These transforms are the ones we wrote earlier.
-        data_transforms = _transforms.Group(
-            inputs=[UR5Inputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
-            outputs=[UR5Outputs()],
-        )
-
-        # Convert absolute actions to delta actions.
-        # By convention, we do not convert the gripper action (7th dimension).
-        delta_action_mask = _transforms.make_bool_mask(6, -1)
-        absolute_action_mask = _transforms.make_bool_mask(6, -1)
-        data_transforms = data_transforms.push(
-            inputs=[_transforms.DeltaActions(delta_action_mask)],
-            outputs=[_transforms.AbsoluteActions(absolute_action_mask)],
-        )
-
-        # Model transforms include things like tokenizing the prompt and action targets
-        # You do not need to change anything here for your own dataset.
-        model_transforms = ModelTransformFactory()(model_config)
-
-        # We return all data transforms for training and inference. No need to change anything here.
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-        )
+np.random.seed(DEFAULT_RANDOM_SEED)
+policy._rng = jax.random.PRNGKey(DEFAULT_RANDOM_SEED)
 
 
 class UR5ePolicyNode(Node):
@@ -155,65 +58,8 @@ class UR5ePolicyNode(Node):
         # Debugging: save one observation to disk for offline inspection
         self._debug_obs_saved = False  # Only save once
         self._debug_obs_path = None  # pathlib.Path("/tmp/ur5e_pi0_obs.npz")
-        #fast_base
-        # checkpoint_dir = download.maybe_download("gs://openpi-assets/checkpoints/pi0_fast_base")
-        # model_cfg = pi0_fast.Pi0FASTConfig(action_dim=32, action_horizon=32)
-        # asset_id = "ur5e"
-        # assets_dir = "gs://openpi-assets/checkpoints/pi0_fast_base/assets"
-        # pi05_base
-        checkpoint_dir = "/home/levi/.cache/openpi/openpi-assets/checkpoints/pi05_ur5e_finetune"
-
-        # # Build train config and policy using UR5e transforms.
-        # config = TrainConfig(
-        #     name="pi0_fast_ur5_sim",
-        #     model=model_cfg,
-        #     data=LeRobotUR5DataConfig(
-        #         repo_id="ur5e_2f-85",
-        #         # This config lets us reload the UR5 normalization stats from the base model checkpoint.
-        #         # Reloading normalization stats can help transfer pre-trained models to new environments.
-        #         # See the [norm_stats.md](../docs/norm_stats.md) file for more details.
-        #         assets=AssetsConfig(
-        #             assets_dir=assets_dir,
-        #             asset_id=asset_id,
-        #         ),
-        #         base_config=DataConfig(
-        #             # This flag determines whether we load the prompt (i.e. the task instruction) from the
-        #             # ``task`` field in the LeRobot dataset. The recommended setting is True.
-        #             prompt_from_task=True,
-        #         ),
-        #     ),
-        #     # Load the pi0 FAST base model checkpoint.
-        #     weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
-        #     num_train_steps=30_000,
-        # ) 
-
-        config = TrainConfig(
-            name="pi05_ur5e_finetune",
-            model=pi0_config.Pi0Config(action_horizon=15, action_dim=7, pi05=True),
-            data=LeRobotUR5eDataConfig(
-                repo_id="ur5e_2f-85_sim",
-                assets=AssetsConfig(
-                    assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets",
-                    asset_id="ur5e",
-                ),
-                base_config=DataConfig(prompt_from_task=True),
-            ),
-            #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
-            num_train_steps=2_000,
-            save_interval=100,
-        )       
-
-        # Create the pi0 policy.
-        self.policy = _policy_config.create_trained_policy(
-            train_config=config,
-            checkpoint_dir=checkpoint_dir,
-        )
+        
         self.get_logger().info("Policy loaded.")
-
-        # Seed both NumPy and JAX policy RNG for reproducibility.
-        self._seed = DEFAULT_RANDOM_SEED
-        np.random.seed(self._seed)
-        self.policy._rng = jax.random.PRNGKey(self._seed)
 
         self.cv_bridge = CvBridge()
         self._state_lock = threading.Lock()
@@ -296,8 +142,6 @@ class UR5ePolicyNode(Node):
                 self.get_logger().info("Waiting for sensor data...", throttle_duration_sec=5.0)
                 return
             
-            
-
         try:
             # Create observation dictionary
             obs = {
@@ -316,7 +160,7 @@ class UR5ePolicyNode(Node):
             self.get_logger().info("Running policy inference...")
             # compute time required for inference
             start_time = time.time()
-            result = self.policy.infer(obs)
+            result = policy.infer(obs)
 
             if result is None or 'actions' not in result:
                 self.get_logger().warn("No actions returned from policy.")
@@ -440,22 +284,9 @@ class UR5ePolicyNode(Node):
                     f"Action Pub{idx+1}/{total_actions}: "
                     f"arm pos {np.array2string(positions, precision=3, suppress_small=True, floatmode='fixed')}"
                 )
-                
                 if idx == total_actions - 1:
                     self.get_logger().info("Requesting next inference run.")
                     self._request_inference()
-
-                    # send Trajectory message with zero velocities to stop the robot
-                    # stop_traj = JointTrajectory()
-                    # stop_traj.joint_names = joint_names
-                    # stop_traj.header.stamp = self.get_clock().now().to_msg()
-                    # stop_traj.header.frame_id = "base_link"
-                    # stop_pt = JointTrajectoryPoint()
-                    # stop_pt.positions = joint_pt.positions
-                    # stop_pt.velocities = [0.0] * 8
-                    # stop_traj.points = [stop_pt]
-                    # self.robot_action_pub.publish(stop_traj)
-                    # self.get_logger().info("Published stop command to robot.")
 
                 time.sleep(0.2)  # Sleep to maintain 1Hz command rate
 
