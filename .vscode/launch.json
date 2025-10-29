@@ -13,6 +13,20 @@
             "env": {
                 "XLA_FLAGS": "--xla_gpu_autotune_level=0"
             },
+        },
+        {
+            "name": "Parse ros2 bags to lerobot format",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "examples/ur5/parse_ur5e_bags_to_lerobot.py",
+            "console": "integratedTerminal",
+            "args": [
+                "csv",
+                "--tasks_csv", "/home/levi/ros2_ws/data/20251028_ur5e_2f85_humble/bag_index.csv",
+                "--bags_dir", "/home/levi/ros2_ws/data/20251028_ur5e_2f85_humble/",
+                "--time_source", "record",
+                "--dataset_name", "ur5e_2f85_marker_in_bowl_1"
+            ]
         }
     ]
 }
