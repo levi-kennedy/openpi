@@ -448,13 +448,13 @@ def load_bag(
 
     if velocity_metrics["max_velocities"]:
         velocities_arr = np.asarray(velocity_metrics["max_velocities"], dtype=np.float64)
-        hist_counts, hist_edges = np.histogram(velocities_arr, bins=20)
-        # output only 2 decimal places for readability
-        logger.info(
-            "Joint velocity histogram counts=%s edges=%s",
-            hist_counts.tolist(),
-            np.round(hist_edges, decimals=2).tolist(),
-        )
+        # hist_counts, hist_edges = np.histogram(velocities_arr, bins=20)
+        # # output only 2 decimal places for readability
+        # logger.info(
+        #     "Joint velocity histogram counts=%s edges=%s",
+        #     hist_counts.tolist(),
+        #     np.round(hist_edges, decimals=2).tolist(),
+        # )
         # percentiles = np.percentile(velocities_arr, [5, 50, 95])
         # logger.info(
         #     "Joint velocity percentiles (5/50/95) rad/s: %s",
@@ -591,12 +591,16 @@ if __name__ == "__main__":
 
     if all_velocity_samples:
         velocities_arr = np.asarray(all_velocity_samples, dtype=np.float64)
-        hist_counts, hist_edges = np.histogram(velocities_arr, bins=100)
+        hist_counts, hist_edges = np.histogram(velocities_arr, bins=500, range=(0.0, 0.5))
         logger.info(
-            "=============================================================================",
-            "Aggregate joint velocity histogram counts=%s edges=%s (across %d frames)",
+            "============================================================================="
+        )
+        logger.info(
+            "Joint velocity histogram counts=%s",
             hist_counts.tolist(),
+        )
+        logger.info(
+            "Joint velocity histogram edges=%s",
             np.round(hist_edges, decimals=5).tolist(),
-            len(all_velocity_samples),
         )
         
