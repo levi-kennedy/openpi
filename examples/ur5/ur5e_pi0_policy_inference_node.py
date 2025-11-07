@@ -14,11 +14,13 @@ import jax
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import GripperCommand
 from cv_bridge import CvBridge
 
 # OpenPI imports
@@ -33,7 +35,8 @@ policy = _policy_config.create_trained_policy(
     train_config=cfg,
     #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_fast_lora_finetune_local/ur5e_2f85_sim-marker-bowl1/14999",
     #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_pi0_fast_lora_finetune_local/droid-marker-bowl_1/9999"
-    checkpoint_dir = os.path.abspath(os.path.join(__file__, os.pardir, "ur5e-2f85-marker-bowl_with_vel_gate_00333_set_1", "9999")),
+    #checkpoint_dir = os.path.abspath(os.path.join(__file__, os.pardir, "ur5e-2f85-marker-bowl_with_vel_gate_00333_set_1", "9999")),
+    checkpoint_dir = os.path.abspath(os.path.join(__file__, os.pardir, "ur5e_irl_marker_in_bowl_vel_gate_015_set_1", "29999")),
 
     # This maps the ros2 topic/input names to the expected policy input names
     repack_transforms=_transforms.Group(inputs=[
@@ -92,6 +95,11 @@ class UR5ePolicyNode(Node):
             "ur5e_wrist_2_joint",
             "ur5e_wrist_3_joint",
         ]
+
+        # Gripper control client
+        self.gripper_action_client = ActionClient(
+            self, GripperCommand, "/robotiq_gripper_controller/gripper_cmd"
+        )
 
         # Background action publisher keeps streaming velocities while next inference runs
         self._action_queue = queue.Queue(maxsize=1)
@@ -288,14 +296,23 @@ class UR5ePolicyNode(Node):
                 robot_traj.header.frame_id = "base_link"
                 joint_pt = JointTrajectoryPoint()
                 positions = np.zeros(7, dtype=np.float32)
-                positions = action[:6] 
+                positions = action[:6]
                 joint_pt.positions = positions.tolist()
-                velocities = np.zeros(7, dtype=np.float32)
-                # velocities[:6] = action[:6]  * 1.0  # Scale velocities if you want to slow down the action rate
-                # joint_pt.velocities = velocities.tolist()
-                joint_pt.time_from_start.nanosec = 1_000_000  # 0.1 sec, doesn't affect anything
+                joint_pt.time_from_start.nanosec = 1_000_000  # 0.1 sec
                 robot_traj.points = [joint_pt]
-                self.robot_action_pub.publish(robot_traj)   
+                self.robot_action_pub.publish(robot_traj)
+
+                def noop(*args):
+                    pass
+                goal_msg = GripperCommand.Goal()
+                gripper_position = action[6]
+                goal_msg.command.position = gripper_position
+                goal_msg.command.max_effort = 10.0
+
+                send_goal_future = self.gripper_action_client.send_goal_async(
+                    goal_msg, feedback_callback=noop
+                )
+                send_goal_future.add_done_callback(noop)
 
                 print(
                     f"Action Pub{idx+1}/{total_actions}: "
@@ -305,7 +322,7 @@ class UR5ePolicyNode(Node):
                     self.get_logger().info("Requesting next inference run.")
                     self._request_inference()
 
-                time.sleep(0.2)  # Sleep to maintain 1Hz command rate
+                time.sleep(0.09)
 
 
         finally:
