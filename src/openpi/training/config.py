@@ -771,12 +771,12 @@ _CONFIGS = [
         ),
         data=LeRobotUR5eDataConfig(
             # where to find the lerobot training dataset
-            repo_id="/home/levi/.cache/huggingface/lerobot/marker_in_bowl_with_vel_gate_00333",
+            repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_marker_in_bowl_vel_gate_02_100",
             assets=AssetsConfig(
                 # path to find the norm stats file
                 assets_dir="/home/levi/.cache/huggingface/lerobot",
                 # particular asset associated with the norm stats
-                asset_id="marker_in_bowl_with_vel_gate_00333",
+                asset_id="ur5e_2f85_marker_in_bowl_vel_gate_02_100",
             ),            
             base_config=DataConfig(
                 local_files_only=True,

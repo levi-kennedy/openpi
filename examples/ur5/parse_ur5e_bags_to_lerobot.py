@@ -95,7 +95,14 @@ def parse_image(msg, target_size=(224, 224)):
             return np.asarray(pil)
         except Exception:
             raise RuntimeError(f"Unsupported/unknown image encoding: {msg.encoding}")
-
+    if msg.height < target_size[0] and "base_camera" in msg.header.frame_id:        
+        # crop the smaller format images to 150x150 before resizing
+        arr = arr[38 :, 100 : 250, :]
+    elif msg.height >= target_size[0] and "base_camera" in msg.header.frame_id:
+        # crop the larger format images to 300x300 before resizing
+        arr = arr[76 :, 200 : 500, :]
+    else:
+        pass
     # Use PIL for resizing (bilinear)
     pil = PILImage.fromarray(arr)
     pil = pil.convert("RGB").resize(target_size, resample=PILImage.BILINEAR)
@@ -242,7 +249,7 @@ def load_bag(
             first_timestamp = t
         # keep track of the most recent timestamp
         last_timestamp = t
-
+        
         # If the arrival of an image should trigger adding the previous frame, check validity first
         if frame_is_valid(frame) and (
             topic == WRIST_CAMERA_TOPIC
@@ -580,6 +587,7 @@ if __name__ == "__main__":
     all_velocity_samples = []
 
     for bag_file_path, task_description in zip(bags, task_descriptions):
+        
         load_bag(
             bag_file_path,
             dataset,
