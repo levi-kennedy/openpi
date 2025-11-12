@@ -2273,7 +2273,6 @@ dependencies = [
     { name = "flatbuffers" },
     { name = "flax" },
     { name = "fsspec", extra = ["gcs"] },
-    { name = "gym-aloha" },
     { name = "imageio" },
     { name = "jax", extra = ["cuda12"] },
     { name = "jaxtyping" },
@@ -2296,6 +2295,11 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "tyro" },
     { name = "wandb" },
+]
+
+[package.optional-dependencies]
+aloha = [
+    { name = "gym-aloha" },
 ]
 
 [package.dev-dependencies]
