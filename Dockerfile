@@ -43,12 +43,12 @@ COPY . .
 RUN GIT_LFS_SKIP_SMUDGE=1 uv pip install --python /.venv/bin/python -e .
 
 RUN /.venv/bin/python - <<'PY'
-from pathlib import Path
+import pathlib
 import shutil
 import transformers
 
-target_dir = Path(transformers.__file__).parent
-source_dir = Path("src/openpi/models_pytorch/transformers_replace")
+target_dir = pathlib.Path(transformers.__file__).parent
+source_dir = pathlib.Path("src/openpi/models_pytorch/transformers_replace")
 for file_path in source_dir.rglob("*"):
     if not file_path.is_file():
         continue
