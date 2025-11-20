@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 #_bridge = CvBridge()
 
 ACTION_RATE = 15  # Hz
-STATE_LENGTH = 7  # 6 joint positions + 1 gripper position + 1 reserved
+STATE_LENGTH = 7  # 6 joint positions + 1 gripper position 
 WRIST_CAMERA_TOPIC = "/wrist_camera/zed_node/rgb/color/rect/image"
 BASE_CAMERA_TOPIC = "/base_camera/zed_node/rgb/color/rect/image"
 JOINT_STATES_TOPIC = "/joint_states"
