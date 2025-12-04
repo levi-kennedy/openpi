@@ -6,6 +6,9 @@
   },
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "mounts": [
+    // "source=/media/colin/0481B5A839D8B67F,target=/storage,type=bind,consistency=cached"
+  ],
   "postCreateCommand": "bash -lc 'if ! grep -q \"ros/jazzy/setup.bash\" /root/.bashrc 2>/dev/null; then echo \"source /opt/ros/jazzy/setup.bash\" >>/root/.bashrc; fi'",
   "customizations": {
     "vscode": {
@@ -24,6 +27,13 @@
   },
   "remoteEnv": {
     "PYTHONPATH": "/workspace/src",
-    "UV_PROJECT_ENVIRONMENT": "/.venv"
-  }
+    "UV_PROJECT_ENVIRONMENT": "/.venv",
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "NVIDIA_DRIVER_CAPABILITIES": "display"
+  },
+  "runArgs": [
+    "--net=host",
+    "--privileged",
+    "--gpus=all"
+  ]
 }
