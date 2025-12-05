@@ -861,6 +861,125 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_droid/params"),
         num_train_steps=20_000,
     ),
+
+    TrainConfig(
+        name="pi0_ur5e_multitask",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="Perseus101/ur5e_multitask_000",
+            assets=AssetsConfig(
+                asset_id="Perseus101/ur5e_multitask_000",
+            ),
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=16,
+        num_train_steps=25_000,
+    ),
+
+    TrainConfig(
+        name="pi05_ur5e_multitask",
+        model=pi0_config.Pi0Config(action_horizon=15, pi05=True),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="Perseus101/ur5e_multitask_000",
+            assets=AssetsConfig(
+                asset_id="Perseus101/ur5e_multitask_000",
+            ),
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=25_000,
+    ),
+
+    TrainConfig(
+        name="pi0_lora_ur5e_multitask",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="Perseus101/ur5e_multitask_000",
+            assets=AssetsConfig(
+                asset_id="Perseus101/ur5e_multitask_000",
+            ),
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=16,
+        num_train_steps=25_000,
+
+        # LoRA Config
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(
+            b1=0.9, # momentum
+            b2=0.99, # rmsprop
+            clip_gradient_norm=1.0, # gradient clipping
+        ),
+        # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # Turn off Exponential Moving Average for LoRA finetuning.
+        ema_decay=None,
+    ),
+
+    TrainConfig(
+        name="pi05_lora_ur5e_multitask",
+        model=pi0_config.Pi0Config(action_horizon=15, pi05=True),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="Perseus101/ur5e_multitask_000",
+            assets=AssetsConfig(
+                asset_id="Perseus101/ur5e_multitask_000",
+            ),
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=25_000,
+
+        # LoRA Config
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(
+            b1=0.9, # momentum
+            b2=0.99, # rmsprop
+            clip_gradient_norm=1.0, # gradient clipping
+        ),
+        # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
+        freeze_filter=pi0_config.Pi0Config(action_horizon=15, pi05=True).get_freeze_filter(),
+        # Turn off Exponential Moving Average for LoRA finetuning.
+        ema_decay=None,
+
+    ),
+
     TrainConfig(
         name="pi0_fast_droid",
         model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=10),
