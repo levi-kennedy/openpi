@@ -861,6 +861,23 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_droid/params"),
         num_train_steps=20_000,
     ),
+
+    TrainConfig(
+        name="pi05_ur5e_marker_bowl",
+        model=pi0_config.Pi0Config(action_horizon=15, pi05=True),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="Perseus101/ur5e_marker_bowl_001",
+            assets=AssetsConfig(
+                asset_id="ur5e_marker_bowl_001",
+            ),
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+    ),
+
     TrainConfig(
         name="pi0_fast_droid",
         model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=10),
