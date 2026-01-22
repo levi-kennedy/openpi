@@ -555,6 +555,20 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+    # Fraction of the dataset to reserve for validation. Set to 0 to disable validation.
+    val_split: float = 0.0
+    # How often (in steps) to run validation when enabled.
+    val_interval: int = 1000
+    # Number of validation batches to average per evaluation.
+    val_num_batches: int = 4
+    # Optional override for validation batch size. Defaults to `batch_size` when None.
+    val_batch_size: int | None = None
+    # Deterministic split seed. Defaults to `seed` when None.
+    val_seed: int | None = None
+    # Whether to shuffle validation batches (useful for very small held-out sets).
+    val_shuffle: bool = False
+    # If true and EMA is enabled, validation will use ema_params instead of the raw params.
+    val_use_ema_params: bool = True
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -600,6 +614,23 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if not 0.0 <= self.val_split < 1.0:
+            raise ValueError("val_split must be in the range [0.0, 1.0).")
+        if self.val_split == 0.0:
+            if any(
+                [
+                    self.val_batch_size is not None,
+                    self.val_num_batches != 4,
+                    self.val_interval != 1000,
+                    self.val_shuffle,
+                ]
+            ):
+                logging.info("Validation split disabled; ignoring validation-specific settings.")
+        else:
+            if self.val_interval <= 0:
+                raise ValueError("val_interval must be positive when validation is enabled.")
+            if self.val_num_batches <= 0:
+                raise ValueError("val_num_batches must be positive when validation is enabled.")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -759,7 +790,52 @@ _CONFIGS = [
         batch_size=4,
         num_train_steps=5_000,
     ),
-
+    # LoRA fine-tuning for a pi0 base local UR5e + 2F-85 irl dataset.
+    TrainConfig(
+        name="ur5e_2f85_sim_pi0_base_lora_finetune_local",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_sim_marker_in_bowl_001_050",
+            assets=AssetsConfig(
+                # path to find the norm stats file
+                assets_dir="/home/levi/.cache/huggingface/lerobot",
+                # particular asset associated with the norm stats
+                asset_id="ur5e_2f85_sim_marker_in_bowl_001_050",
+            ),            
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # Learning rate and optimizer settings for LoRA finetuning.
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(
+            b1=0.9, # momentum
+            b2=0.99, # rmsprop
+            clip_gradient_norm=1.0, # gradient clipping
+        ),
+        # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # Turn off Exponential Moving Average for LoRA finetuning.
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=5_000,
+        log_interval=25,
+        save_interval=5_000,
+    ),
     # LoRA fine-tuning for a local UR5e + 2F-85 irl dataset.
     TrainConfig(
         name="ur5e_2f85_pi0_fast_lora_finetune_local",
@@ -771,12 +847,12 @@ _CONFIGS = [
         ),
         data=LeRobotUR5eDataConfig(
             # where to find the lerobot training dataset
-            repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_marker_in_bowl_vel_gate_02_100",
+            repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_marker_in_bowl_231_320",
             assets=AssetsConfig(
                 # path to find the norm stats file
                 assets_dir="/home/levi/.cache/huggingface/lerobot",
                 # particular asset associated with the norm stats
-                asset_id="ur5e_2f85_marker_in_bowl_vel_gate_02_100",
+                asset_id="ur5e_2f85_marker_in_bowl_231_320",
             ),            
             base_config=DataConfig(
                 local_files_only=True,
@@ -787,14 +863,14 @@ _CONFIGS = [
         # Learning rate and optimizer settings for LoRA finetuning.
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
-            peak_lr=1.5e-4,
+            peak_lr=5e-5,
             decay_steps=10_000,
-            decay_lr=1.5e-5,
+            decay_lr=5e-6,
         ),
         optimizer=_optimizer.AdamW(
             b1=0.9, # momentum
             b2=0.99, # rmsprop
-            clip_gradient_norm=0.5, # gradient clipping
+            clip_gradient_norm=1.0, # gradient clipping
         ),
         # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
         freeze_filter=pi0_fast.Pi0FASTConfig(
@@ -805,10 +881,57 @@ _CONFIGS = [
         ).get_freeze_filter(),
         # Turn off Exponential Moving Average for LoRA finetuning.
         ema_decay=None,
-        batch_size=4,
+        batch_size=8,
         num_train_steps=5_000,
+        log_interval=25,
+        save_interval=5_000,
     ),
-
+    # LoRA fine-tuning for a pi0 base local UR5e + 2F-85 irl dataset.
+    TrainConfig(
+        name="ur5e_2f85_pi0_base_lora_finetune_local",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUR5eDataConfig(
+            # where to find the lerobot training dataset
+            repo_id="/home/levi/.cache/huggingface/lerobot/ur5e_2f85_marker_in_bowl_231_320",
+            assets=AssetsConfig(
+                # path to find the norm stats file
+                assets_dir="/home/levi/.cache/huggingface/lerobot",
+                # particular asset associated with the norm stats
+                asset_id="ur5e_2f85_marker_in_bowl_231_320",
+            ),            
+            base_config=DataConfig(
+                local_files_only=True,
+                action_sequence_keys=("action",),
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # Learning rate and optimizer settings for LoRA finetuning.
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=10_000,
+            decay_lr=5e-6,
+        ),
+        optimizer=_optimizer.AdamW(
+            b1=0.9, # momentum
+            b2=0.99, # rmsprop
+            clip_gradient_norm=1.0, # gradient clipping
+        ),
+        # Freeze non-LoRA params as defined by the model's default LoRA freeze filter.
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # Turn off Exponential Moving Average for LoRA finetuning.
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=5_000,
+        log_interval=25,
+        save_interval=5_000,
+    ),
     #
     # Fine-tuning Droid (local LeRobot dataset).
     #

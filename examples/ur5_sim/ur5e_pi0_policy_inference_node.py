@@ -27,11 +27,12 @@ from openpi.training import config as train_config
 
 
 # Load the trained UR5e Pi0_fast local policy
-cfg = train_config.get_config("ur5e_2f85_pi0_fast_lora_finetune_local")
+cfg = train_config.get_config("ur5e_2f85_sim_pi0_base_lora_finetune_local")
 policy = _policy_config.create_trained_policy(
     train_config=cfg,
     #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_fast_lora_finetune_local/ur5e_2f85_sim-marker-bowl1/14999",
-    checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_pi0_fast_lora_finetune_local/droid-marker-bowl_1/9999",
+    #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_pi0_fast_lora_finetune_local/droid-marker-bowl_1/9999",
+    checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_base_lora_finetune_local/ur5e_2f85_sim_marker_in_bowl_001_050_1/9999",
     # This maps the ros2 topic/input names to the expected policy input names
     repack_transforms=_transforms.Group(inputs=[
         _transforms.RepackTransform({
@@ -131,7 +132,6 @@ class UR5ePolicyNode(Node):
             if self.processing:
                 return
             self.processing = True
-
             data_missing = (
                 self.latest_joint_state is None
                 or self.latest_base_image is None
@@ -166,7 +166,17 @@ class UR5ePolicyNode(Node):
             if result is None or 'actions' not in result:
                 self.get_logger().warn("No actions returned from policy.")
             else:
-                actions = result['actions'] 
+                actions = np.asarray(result['actions'])
+                try:
+                    action_stats = {
+                        "shape": actions.shape,
+                        "min": float(actions.min()),
+                        "max": float(actions.max()),
+                        "std": float(actions.std()),
+                    }
+                    self.get_logger().info(f"Action stats: {action_stats}")
+                except Exception as exc:
+                    self.get_logger().warn(f"Failed to compute action stats: {exc}")
                 inference_time = time.time() - start_time
                 self.get_logger().info(f"Policy inference complete in {inference_time:.4f} seconds ... sending actions to queue")
                 if self._enqueue_actions(actions):  # dump the actions into the queue for the publisher thread
@@ -259,37 +269,42 @@ class UR5ePolicyNode(Node):
             joint_names = list(self.trajectory_joint_names)
             self._publishing_actions = True
 
-        total_actions = len(actions)
+        total_actions = actions.shape[0]
 
         try:
-            for idx, action in enumerate(actions):
-                if self._publisher_shutdown.is_set():
-                    break
-                
+            if not self._publisher_shutdown.is_set():
                 robot_traj = JointTrajectory()
                 robot_traj.joint_names = joint_names
                 robot_traj.header.stamp = self.get_clock().now().to_msg()
                 robot_traj.header.frame_id = "base_link"
-                joint_pt = JointTrajectoryPoint()
-                positions = np.zeros(7, dtype=np.float32)
-                positions = action[:7] 
-                joint_pt.positions = positions.tolist()
-                velocities = np.zeros(7, dtype=np.float32)
-                # velocities[:6] = action[:6]  * 1.0  # Scale velocities if you want to slow down the action rate
-                # joint_pt.velocities = velocities.tolist()
-                joint_pt.time_from_start.nanosec = 1_000_000  # 0.1 sec, doesn't affect anything
-                robot_traj.points = [joint_pt]
+                # to compute velocities, we need want to subtract next action from previous action
+                T = 1.0  # execution duration of action chunck in seconds
+                dt = T / total_actions  # time step between actions
+                # Build previous/next action stacks (use array casting instead of np.ndarray, which treats the argument as a shape)
+                action_prev = np.vstack((self.latest_joint_state[:7], actions[:-2, :])).astype(np.float32)  # start with current joint state
+                action_next = actions[1:, :].astype(np.float32)
+                # central difference to compute velocities + endpoint stop at zero velocity
+                velocities = (action_next - action_prev) / (2 * dt)
+                velocities = np.vstack((velocities, np.zeros((1, 7), dtype=np.float32)))  # last velocity is zero
+
+                for idx, action in enumerate(actions):
+                                                       
+                    joint_pt = JointTrajectoryPoint()
+                    joint_pt.time_from_start.nanosec = int(((idx + 1) * dt) * 1e9)
+                    positions = action[:7] 
+                    joint_pt.positions = positions.tolist()
+                    joint_pt.velocities = velocities[idx].tolist()    
+                    robot_traj.points.extend([joint_pt])
+                
                 self.robot_action_pub.publish(robot_traj)   
 
-                print(
-                    f"Action Pub{idx+1}/{total_actions}: "
-                    f"arm pos {np.array2string(positions, precision=3, suppress_small=True, floatmode='fixed')}"
-                )
-                if idx == total_actions - 1:
-                    self.get_logger().info("Requesting next inference run.")
-                    self._request_inference()
+                print(f"Action Published")
+                time.sleep(3.0)  # Sleep to maintain 1Hz command rate
+                
+                self.get_logger().info("Requesting next inference run.")
+                self._request_inference()
 
-                time.sleep(0.2)  # Sleep to maintain 1Hz command rate
+                
 
 
         finally:
