@@ -66,6 +66,8 @@ class UR5ePolicyNode(Node):
         logging.basicConfig(level=logging.INFO, force=True)
         self.policy = policy
 
+        self.declare_parameter("prompt", DEFAULT_PROMPT)
+
         # Debugging: save one observation to disk for offline inspection
         self._debug_obs_saved = False  # Only save once
         self._debug_obs_path = None
@@ -178,7 +180,7 @@ class UR5ePolicyNode(Node):
                 "wrist_rgb": self.latest_wrist_image.copy(),
                 "joints": self.latest_joint_state[:6].copy(),  # Ur5e has 6 arm joints
                 "gripper": np.array([self.latest_joint_state[6]], dtype=np.float32),  # 2f-85 gripper last joint
-                "prompt": DEFAULT_PROMPT,
+                "prompt": str(self.get_parameter("prompt").value),
             }
 
             # Save observation snapshot for offline debugging if enabled
