@@ -287,53 +287,47 @@ class UR5ePolicyNode(Node):
     def _publish_action_sequence(self, actions: np.ndarray) -> None:
         with self._state_lock:
             joint_names = list(self.trajectory_joint_names)
-            self._publishing_actions = True
 
         total_actions = len(actions)
 
-        try:
-            for idx, action in enumerate(actions):
-                if self._publisher_shutdown.is_set():
-                    break
-                
-                robot_traj = JointTrajectory()
-                robot_traj.joint_names = joint_names
-                robot_traj.header.stamp = self.get_clock().now().to_msg()
-                robot_traj.header.frame_id = "base_link"
-                joint_pt = JointTrajectoryPoint()
-                positions = np.zeros(7, dtype=np.float32)
-                positions = action[:6]
-                joint_pt.positions = positions.tolist()
-                joint_pt.time_from_start.nanosec = 1_000_000  # 0.1 sec
-                robot_traj.points = [joint_pt]
-                self.robot_action_pub.publish(robot_traj)
+        def _make_trajectory_point(action: list, time_ns=1_000_000):
+            pt = JointTrajectoryPoint()
+            pt.positions = list(action[:6])
+            pt.time_from_start.nanosec = time_ns
+            return pt
 
-                def noop(*args):
-                    pass
-                goal_msg = GripperCommand.Goal()
-                gripper_position = action[6]
-                goal_msg.command.position = gripper_position
-                goal_msg.command.max_effort = 10.0
+        points = [_make_trajectory_point(action, time_ns=2_000_000 * i) for i, action in enumerate(actions)]
 
-                send_goal_future = self.gripper_action_client.send_goal_async(
-                    goal_msg, feedback_callback=noop
-                )
-                send_goal_future.add_done_callback(noop)
+        robot_traj = JointTrajectory()
+        robot_traj.joint_names = joint_names
+        robot_traj.header.stamp = self.get_clock().now().to_msg()
+        robot_traj.header.frame_id = "base_link"
+        robot_traj.points = points
+        self.robot_action_pub.publish(robot_traj)
+        self.get_logger().info(f"arm pos \n{np.array2string(actions, precision=3, suppress_small=True, floatmode='fixed')}")
 
-                print(
-                    f"Action Pub{idx+1}/{total_actions}: "
-                    f"arm pos {np.array2string(positions, precision=3, suppress_small=True, floatmode='fixed')}"
-                )
-                if idx == total_actions - 1:
-                    self.get_logger().info("Requesting next inference run.")
-                    self._request_inference()
+        for idx, action in enumerate(actions):
+            if self._publisher_shutdown.is_set():
+                break
 
-                time.sleep(0.09)
+            def noop(*args):
+                pass
+            goal_msg = GripperCommand.Goal()
+            gripper_position = action[6]
+            goal_msg.command.position = gripper_position
+            goal_msg.command.max_effort = 10.0
 
+            send_goal_future = self.gripper_action_client.send_goal_async(
+                goal_msg, feedback_callback=noop
+            )
+            send_goal_future.add_done_callback(noop)
 
-        finally:
-            with self._state_lock:
-                self._publishing_actions = False
+            if idx == total_actions - 4:
+                self.get_logger().info("Requesting next inference run.")
+                self._request_inference()
+
+            time.sleep(0.099)
+
 
     def destroy_node(self):
         self._publisher_shutdown.set()
