@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import logging
-import pathlib
 import dataclasses
 import queue
 import threading
@@ -15,6 +15,7 @@ import jax
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.utilities import remove_ros_args
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -29,42 +30,47 @@ from openpi import transforms as _transforms
 from openpi.training import config as train_config
 
 
-# Load the trained UR5e Pi0_fast local policy
-cfg = train_config.get_config("ur5e_2f85_pi0_fast_lora_finetune_local")
-policy = _policy_config.create_trained_policy(
-    train_config=cfg,
-    #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_sim_pi0_fast_lora_finetune_local/ur5e_2f85_sim-marker-bowl1/14999",
-    #checkpoint_dir="/home/levi/projects/openpi/checkpoints/ur5e_2f85_pi0_fast_lora_finetune_local/droid-marker-bowl_1/9999"
-    #checkpoint_dir = os.path.abspath(os.path.join(__file__, os.pardir, "ur5e-2f85-marker-bowl_with_vel_gate_00333_set_1", "9999")),
-    checkpoint_dir = os.path.abspath(os.path.join(__file__, os.pardir, "ur5e_irl_marker_in_bowl_vel_gate_015_set_1", "29999")),
-
-    # This maps the ros2 topic/input names to the expected policy input names
-    repack_transforms=_transforms.Group(inputs=[
-        _transforms.RepackTransform({
-            "image": "base_rgb",
-            "wrist_image": "wrist_rgb",
-            "joints": "joints",
-            "gripper": "gripper",
-            "prompt": "prompt",
-        })
-    ]),
-)
-
 DEFAULT_RANDOM_SEED = 0
-np.random.seed(DEFAULT_RANDOM_SEED)
-policy._rng = jax.random.PRNGKey(DEFAULT_RANDOM_SEED)
+DEFAULT_PROMPT = "Pick up the marker from the table and put it in the bowl"
+
+
+def _create_policy(config_name: str, checkpoint_dir: str):
+    cfg = train_config.get_config(config_name)
+    resolved_checkpoint_dir = os.path.abspath(os.path.expanduser(checkpoint_dir))
+    policy = _policy_config.create_trained_policy(
+        train_config=cfg,
+        checkpoint_dir=resolved_checkpoint_dir,
+        # This maps ros2 topic/input names to the expected policy input names.
+        repack_transforms=_transforms.Group(inputs=[
+            _transforms.RepackTransform({
+                "image": "base_rgb",
+                "wrist_image": "wrist_rgb",
+                "joints": "joints",
+                "gripper": "gripper",
+                "prompt": "prompt",
+            })
+        ]),
+    )
+    return policy, resolved_checkpoint_dir
+
+
+def _seed_policy(policy, seed: int) -> None:
+    np.random.seed(seed)
+    policy._rng = jax.random.PRNGKey(seed)
 
 
 class UR5ePolicyNode(Node):
-    def __init__(self):
+    def __init__(self, policy):
         super().__init__('ur5e_policy_node')
 
         logging.basicConfig(level=logging.INFO, force=True)
-        self.get_logger().info("Loading UR5e Pi0 policy...")
+        self.policy = policy
+
+        self.declare_parameter("prompt", DEFAULT_PROMPT)
 
         # Debugging: save one observation to disk for offline inspection
         self._debug_obs_saved = False  # Only save once
-        self._debug_obs_path = None  # pathlib.Path("/tmp/ur5e_pi0_obs.npz")
+        self._debug_obs_path = None
         
         self.get_logger().info("Policy loaded.")
 
@@ -174,7 +180,7 @@ class UR5ePolicyNode(Node):
                 "wrist_rgb": self.latest_wrist_image.copy(),
                 "joints": self.latest_joint_state[:6].copy(),  # Ur5e has 6 arm joints
                 "gripper": np.array([self.latest_joint_state[6]], dtype=np.float32),  # 2f-85 gripper last joint
-                "prompt": "Pick up the marker from the table and put it in the bowl",
+                "prompt": str(self.get_parameter("prompt").value),
             }
 
             # Save observation snapshot for offline debugging if enabled
@@ -185,7 +191,7 @@ class UR5ePolicyNode(Node):
             self.get_logger().info("Running policy inference...")
             # compute time required for inference
             start_time = time.time()
-            result = policy.infer(obs)
+            result = self.policy.infer(obs)
 
             if result is None or 'actions' not in result:
                 self.get_logger().warn("No actions returned from policy.")
@@ -281,53 +287,47 @@ class UR5ePolicyNode(Node):
     def _publish_action_sequence(self, actions: np.ndarray) -> None:
         with self._state_lock:
             joint_names = list(self.trajectory_joint_names)
-            self._publishing_actions = True
 
         total_actions = len(actions)
 
-        try:
-            for idx, action in enumerate(actions):
-                if self._publisher_shutdown.is_set():
-                    break
-                
-                robot_traj = JointTrajectory()
-                robot_traj.joint_names = joint_names
-                robot_traj.header.stamp = self.get_clock().now().to_msg()
-                robot_traj.header.frame_id = "base_link"
-                joint_pt = JointTrajectoryPoint()
-                positions = np.zeros(7, dtype=np.float32)
-                positions = action[:6]
-                joint_pt.positions = positions.tolist()
-                joint_pt.time_from_start.nanosec = 1_000_000  # 0.1 sec
-                robot_traj.points = [joint_pt]
-                self.robot_action_pub.publish(robot_traj)
+        def _make_trajectory_point(action: list, time_ns=1_000_000):
+            pt = JointTrajectoryPoint()
+            pt.positions = list(action[:6])
+            pt.time_from_start.nanosec = time_ns
+            return pt
 
-                def noop(*args):
-                    pass
-                goal_msg = GripperCommand.Goal()
-                gripper_position = action[6]
-                goal_msg.command.position = gripper_position
-                goal_msg.command.max_effort = 10.0
+        points = [_make_trajectory_point(action, time_ns=2_000_000 * i) for i, action in enumerate(actions)]
 
-                send_goal_future = self.gripper_action_client.send_goal_async(
-                    goal_msg, feedback_callback=noop
-                )
-                send_goal_future.add_done_callback(noop)
+        robot_traj = JointTrajectory()
+        robot_traj.joint_names = joint_names
+        robot_traj.header.stamp = self.get_clock().now().to_msg()
+        robot_traj.header.frame_id = "base_link"
+        robot_traj.points = points
+        self.robot_action_pub.publish(robot_traj)
+        self.get_logger().info(f"arm pos \n{np.array2string(actions, precision=3, suppress_small=True, floatmode='fixed')}")
 
-                print(
-                    f"Action Pub{idx+1}/{total_actions}: "
-                    f"arm pos {np.array2string(positions, precision=3, suppress_small=True, floatmode='fixed')}"
-                )
-                if idx == total_actions - 1:
-                    self.get_logger().info("Requesting next inference run.")
-                    self._request_inference()
+        for idx, action in enumerate(actions):
+            if self._publisher_shutdown.is_set():
+                break
 
-                time.sleep(0.09)
+            def noop(*args):
+                pass
+            goal_msg = GripperCommand.Goal()
+            gripper_position = action[6]
+            goal_msg.command.position = gripper_position
+            goal_msg.command.max_effort = 10.0
 
+            send_goal_future = self.gripper_action_client.send_goal_async(
+                goal_msg, feedback_callback=noop
+            )
+            send_goal_future.add_done_callback(noop)
 
-        finally:
-            with self._state_lock:
-                self._publishing_actions = False
+            if idx == total_actions - 4:
+                self.get_logger().info("Requesting next inference run.")
+                self._request_inference()
+
+            time.sleep(0.099)
+
 
     def destroy_node(self):
         self._publisher_shutdown.set()
@@ -336,8 +336,41 @@ class UR5ePolicyNode(Node):
         return super().destroy_node()
 
 def main(args=None):
+    parser = argparse.ArgumentParser(
+        description="UR5e Pi0 policy inference node."
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Config name passed to openpi.training.config.get_config().",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        required=True,
+        help="Path to the trained policy checkpoint directory.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_RANDOM_SEED,
+        help="Random seed used for policy RNG initialization.",
+    )
+    cli_args = remove_ros_args(args=args)
+    parsed = parser.parse_args(cli_args[1:])
+
+    policy, checkpoint_dir = _create_policy(
+        config_name=parsed.config,
+        checkpoint_dir=parsed.checkpoint_dir,
+    )
+    _seed_policy(policy, parsed.seed)
+
     rclpy.init(args=args)
-    node = UR5ePolicyNode()
+    node = UR5ePolicyNode(
+        policy=policy,
+    )
+    node.get_logger().info(
+        f"Using config '{parsed.config}' and checkpoint '{checkpoint_dir}'."
+    )
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:
